@@ -17,6 +17,17 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.math.BigDecimal
 import java.math.RoundingMode
+import kotlin.math.roundToInt
+
+data class WalletAlert(
+    val walletLabel: String,
+    val message: String
+)
+
+data class ChainTotal(
+    val chainName: String,
+    val usdValue: BigDecimal
+)
 
 data class WalletWatchUiState(
     val wallets: List<Wallet> = emptyList(),
@@ -25,6 +36,12 @@ data class WalletWatchUiState(
     val selectedCurrency: String = "USD",
     val availableCurrencies: List<String> = listOf("USD", "GBP", "EUR"),
     val usdRates: Map<String, Double> = mapOf("USD" to 1.0, "GBP" to 0.79, "EUR" to 0.92),
+    val favoriteAddresses: Set<String> = emptySet(),
+    val miniChartSeriesByWallet: Map<String, List<BigDecimal>> = emptyMap(),
+    val alerts: List<WalletAlert> = emptyList(),
+    val alertDropPercentThreshold: Int = 10,
+    val alertLowBalanceUsdThreshold: BigDecimal = BigDecimal("1000"),
+    val chainTotals: List<ChainTotal> = emptyList(),
     val error: String? = null,
     val usesDemoData: Boolean = BuildConfig.ALCHEMY_API_KEY.isBlank()
 )
@@ -65,7 +82,40 @@ class WalletWatchViewModel(
         _uiState.update { state ->
             val nextWallets = state.wallets.filterNot { it.address == address }
             val nextSnapshots = state.snapshots.filterNot { it.wallet.address == address }
-            state.copy(wallets = nextWallets, snapshots = nextSnapshots, error = null)
+            state.copy(
+                wallets = nextWallets,
+                snapshots = nextSnapshots,
+                favoriteAddresses = state.favoriteAddresses - address,
+                miniChartSeriesByWallet = state.miniChartSeriesByWallet - address,
+                error = null
+            )
+        }
+    }
+
+    fun toggleFavorite(address: String) {
+        _uiState.update { state ->
+            val updated = if (state.favoriteAddresses.contains(address)) {
+                state.favoriteAddresses - address
+            } else {
+                state.favoriteAddresses + address
+            }
+            state.copy(favoriteAddresses = updated)
+        }
+    }
+
+    fun setAlertSettings(dropPercent: Int, lowBalanceUsd: String) {
+        val parsedLowBalance = lowBalanceUsd.toBigDecimalOrNull()
+        if (parsedLowBalance == null || parsedLowBalance < BigDecimal.ZERO) {
+            _uiState.update { it.copy(error = "Enter a valid low-balance threshold") }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                alertDropPercentThreshold = dropPercent.coerceIn(1, 99),
+                alertLowBalanceUsdThreshold = parsedLowBalance,
+                error = null
+            )
         }
     }
 
@@ -91,12 +141,32 @@ class WalletWatchViewModel(
                 val currencyList = rates.keys
                     .filter { it.length == 3 }
                     .sorted()
+                val currentState = _uiState.value
+                val nextSeries = buildNextMiniChartSeries(
+                    current = currentState.miniChartSeriesByWallet,
+                    snapshots = snapshots
+                )
+                val nextAlerts = buildAlerts(
+                    previousSnapshots = currentState.snapshots,
+                    nextSnapshots = snapshots,
+                    dropPercentThreshold = currentState.alertDropPercentThreshold,
+                    lowBalanceThresholdUsd = currentState.alertLowBalanceUsdThreshold
+                )
+                val chainTotals = buildChainTotals(snapshots)
+
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        snapshots = snapshots,
+                        snapshots = snapshots.sortedWith(
+                            compareByDescending<WalletSnapshot> { snap ->
+                                it.favoriteAddresses.contains(snap.wallet.address)
+                            }.thenByDescending { snap -> snap.totalUsd }
+                        ),
                         usdRates = rates,
-                        availableCurrencies = currencyList
+                        availableCurrencies = currencyList,
+                        miniChartSeriesByWallet = nextSeries,
+                        alerts = nextAlerts,
+                        chainTotals = chainTotals
                     )
                 }
             }.onFailure { throwable ->
@@ -130,6 +200,88 @@ class WalletWatchViewModel(
         val rate = uiState.value.usdRates[selected]?.toBigDecimal() ?: BigDecimal.ONE
         val converted = usdValue.multiply(rate).setScale(2, RoundingMode.HALF_UP)
         return "$selected $converted"
+    }
+
+    fun miniChart(address: String): String {
+        val points = _uiState.value.miniChartSeriesByWallet[address].orEmpty()
+        if (points.size < 2) return "-"
+        val min = points.minOrNull() ?: return "-"
+        val max = points.maxOrNull() ?: return "-"
+        if (min == max) return "▁".repeat(points.size)
+        val ticks = "▁▂▃▄▅▆▇█"
+        return points.joinToString(separator = "") { point ->
+            val ratio = point.subtract(min)
+                .divide(max.subtract(min), 4, RoundingMode.HALF_UP)
+                .toDouble()
+            val index = (ratio * (ticks.lastIndex)).roundToInt().coerceIn(0, ticks.lastIndex)
+            ticks[index].toString()
+        }
+    }
+
+    private fun buildChainTotals(snapshots: List<WalletSnapshot>): List<ChainTotal> {
+        return snapshots
+            .flatMap { it.chainBalances }
+            .groupBy { it.chain.displayName }
+            .map { (chainName, balances) ->
+                ChainTotal(
+                    chainName = chainName,
+                    usdValue = balances.fold(BigDecimal.ZERO) { acc, item -> acc + item.valueInUsd }
+                )
+            }
+            .sortedByDescending { it.usdValue }
+    }
+
+    private fun buildNextMiniChartSeries(
+        current: Map<String, List<BigDecimal>>,
+        snapshots: List<WalletSnapshot>
+    ): Map<String, List<BigDecimal>> {
+        return snapshots.associate { snapshot ->
+            val previous = current[snapshot.wallet.address].orEmpty()
+            snapshot.wallet.address to (previous + snapshot.totalUsd).takeLast(12)
+        }
+    }
+
+    private fun buildAlerts(
+        previousSnapshots: List<WalletSnapshot>,
+        nextSnapshots: List<WalletSnapshot>,
+        dropPercentThreshold: Int,
+        lowBalanceThresholdUsd: BigDecimal
+    ): List<WalletAlert> {
+        if (nextSnapshots.isEmpty()) return emptyList()
+        val previousByAddress = previousSnapshots.associateBy { it.wallet.address }
+
+        return nextSnapshots.mapNotNull { next ->
+            val previous = previousByAddress[next.wallet.address]
+            val lowBalanceAlert = if (next.totalUsd < lowBalanceThresholdUsd) {
+                WalletAlert(
+                    walletLabel = next.wallet.label,
+                    message = "Balance below threshold (${displayValue(lowBalanceThresholdUsd)})."
+                )
+            } else {
+                null
+            }
+
+            val dropAlert = if (previous != null && previous.totalUsd > BigDecimal.ZERO) {
+                val ratio = previous.totalUsd.subtract(next.totalUsd)
+                    .divide(previous.totalUsd, 4, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal("100"))
+                if (ratio >= BigDecimal(dropPercentThreshold)) {
+                    WalletAlert(
+                        walletLabel = next.wallet.label,
+                        message = "Value dropped ${ratio.setScale(1, RoundingMode.HALF_UP)}% since last refresh."
+                    )
+                } else {
+                    null
+                }
+            } else {
+                null
+            }
+
+            listOfNotNull(lowBalanceAlert, dropAlert).firstOrNull()?.let { first ->
+                val combined = listOfNotNull(lowBalanceAlert?.message, dropAlert?.message).joinToString(" ")
+                first.copy(message = combined)
+            }
+        }
     }
 
     private fun isValidAddress(address: String): Boolean {
