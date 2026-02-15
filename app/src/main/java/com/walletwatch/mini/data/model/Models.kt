@@ -18,11 +18,6 @@ data class Wallet(
     val address: String
 )
 
-enum class Currency(val symbol: String) {
-    USD("$"),
-    GBP("£")
-}
-
 data class ChainBalance(
     val chain: Chain,
     val nativeBalance: BigDecimal,
