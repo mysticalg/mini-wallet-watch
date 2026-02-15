@@ -57,3 +57,37 @@ If `ALCHEMY_API_KEY` is missing, the app runs in demo mode and generates determi
 - `app/src/main/java/com/walletwatch/mini/data/model/` – chain/wallet models
 - `app/src/main/java/com/walletwatch/mini/data/remote/` – Alchemy + FX API interfaces
 - `app/src/main/java/com/walletwatch/mini/data/repository/` – balance + currency repositories
+
+## GitHub Action: Play Store-ready release bundle
+
+A workflow has been added at `.github/workflows/android-release.yml` to build a **signed** release App Bundle (`.aab`) that you can upload directly to Google Play Console.
+
+### How it works
+
+- Runs manually (`workflow_dispatch`) or automatically for tags like `v1.2.3`.
+- Builds `bundleRelease`.
+- Uploads `app-release.aab` as a workflow artifact.
+- Also uploads ProGuard/R8 mapping file when available.
+
+### Required GitHub repository secrets
+
+- `ANDROID_KEYSTORE_BASE64`: Base64 of your upload keystore file (`.jks`)
+- `ANDROID_KEY_ALIAS`: key alias in the keystore
+- `ANDROID_KEYSTORE_PASSWORD`: keystore password
+- `ANDROID_KEY_PASSWORD`: key password
+- `ALCHEMY_API_KEY` (optional but recommended)
+
+### One-time keystore base64 command
+
+```bash
+base64 -w 0 your-upload-key.jks
+```
+
+Copy that output into the `ANDROID_KEYSTORE_BASE64` secret.
+
+### Download and upload
+
+1. Open **Actions** in GitHub.
+2. Run **Build signed Android release bundle** (or push a `v*` tag).
+3. Download the `app-release-bundle` artifact.
+4. Upload `app-release.aab` to Google Play Console.
