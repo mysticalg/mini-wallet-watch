@@ -3,9 +3,11 @@ package com.walletwatch.mini.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -22,6 +24,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +47,8 @@ fun WalletWatchScreen(viewModel: WalletWatchViewModel) {
     val clipboardManager = LocalClipboardManager.current
     var addressInput by remember { mutableStateOf("") }
     var currencyMenuExpanded by remember { mutableStateOf(false) }
+    var dropThresholdInput by remember { mutableStateOf(state.alertDropPercentThreshold.toString()) }
+    var lowBalanceInput by remember { mutableStateOf(state.alertLowBalanceUsdThreshold.toPlainString()) }
 
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { scanned ->
@@ -132,6 +137,53 @@ fun WalletWatchScreen(viewModel: WalletWatchViewModel) {
 
             state.error?.let { Text(text = it, color = MaterialTheme.colorScheme.error) }
 
+            if (state.alerts.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Alerts", fontWeight = FontWeight.SemiBold)
+                        state.alerts.forEach { alert ->
+                            Text("• ${alert.walletLabel}: ${alert.message}", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Alert settings", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = dropThresholdInput,
+                            onValueChange = { dropThresholdInput = it },
+                            label = { Text("Drop %") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = lowBalanceInput,
+                            onValueChange = { lowBalanceInput = it },
+                            label = { Text("Low bal (USD)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    OutlinedButton(onClick = {
+                        viewModel.setAlertSettings(dropThresholdInput.toIntOrNull() ?: 10, lowBalanceInput)
+                    }) { Text("Apply alert thresholds") }
+                }
+            }
+
+            if (state.chainTotals.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Multi-chain total value view", fontWeight = FontWeight.SemiBold)
+                        state.chainTotals.forEach { total ->
+                            Text("${total.chainName}: ${viewModel.displayValue(total.usdValue)}")
+                        }
+                    }
+                }
+            }
+
             if (state.isLoading) {
                 CircularProgressIndicator()
             }
@@ -142,8 +194,15 @@ fun WalletWatchScreen(viewModel: WalletWatchViewModel) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(snapshot.wallet.label, fontWeight = FontWeight.Bold)
-                                TextButton(onClick = { viewModel.removeWallet(snapshot.wallet.address) }) {
-                                    Text("Remove")
+                                Row {
+                                    TextButton(onClick = { viewModel.toggleFavorite(snapshot.wallet.address) }) {
+                                        val isFavorite = state.favoriteAddresses.contains(snapshot.wallet.address)
+                                        Text(if (isFavorite) "★ Favorite" else "☆ Favorite")
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    TextButton(onClick = { viewModel.removeWallet(snapshot.wallet.address) }) {
+                                        Text("Remove")
+                                    }
                                 }
                             }
                             Text(snapshot.wallet.address, style = MaterialTheme.typography.bodySmall)
@@ -157,6 +216,10 @@ fun WalletWatchScreen(viewModel: WalletWatchViewModel) {
                             Text(
                                 text = "Total: ${viewModel.displayValue(snapshot.totalUsd)}",
                                 fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Mini chart: ${viewModel.miniChart(snapshot.wallet.address)}",
+                                style = MaterialTheme.typography.bodySmall
                             )
                             snapshot.chainBalances.forEach { chainBalance ->
                                 Text(
