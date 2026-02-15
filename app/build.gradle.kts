@@ -21,8 +21,26 @@ android {
         buildConfigField("String", "ALCHEMY_API_KEY", "\"$alchemyApiKey\"")
     }
 
+
+    signingConfigs {
+        create("release") {
+            val signingStoreFile = project.findProperty("SIGNING_STORE_FILE") as String?
+            val signingStorePassword = project.findProperty("SIGNING_STORE_PASSWORD") as String?
+            val signingKeyAlias = project.findProperty("SIGNING_KEY_ALIAS") as String?
+            val signingKeyPassword = project.findProperty("SIGNING_KEY_PASSWORD") as String?
+
+            if (!signingStoreFile.isNullOrBlank()) {
+                storeFile = file(signingStoreFile)
+            }
+            storePassword = signingStorePassword
+            keyAlias = signingKeyAlias
+            keyPassword = signingKeyPassword
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
